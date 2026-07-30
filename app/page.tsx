@@ -4,7 +4,6 @@ import { useEffect, useRef } from 'react';
 import {
   addBroadphaseLayer,
   addObjectLayer,
-  box,
   createWorld,
   createWorldSettings,
   enableCollision,
@@ -12,6 +11,7 @@ import {
   registerAll,
   rigidBody,
   sphere,
+  triangleMesh,
   updateWorld,
 } from 'crashcat';
 import * as THREE from 'three';
@@ -87,21 +87,21 @@ export default function Home() {
 
     if (snowContext) {
       const image = snowContext.createImageData(textureSize, textureSize);
-      const light = [229, 233, 231];
-      const base = [220, 226, 224];
-      const mid = [214, 221, 219];
-      const shadow = [207, 215, 214];
+      const light = [230, 235, 230];
+      const base = [220, 225, 220];
+      const mid = [215, 220, 215];
+      const shadow = [205, 215, 210];
 
       for (let y = 0; y < textureSize; y++) {
         for (let x = 0; x < textureSize; x++) {
           const value =
-            valueNoise(x, y, 7) * 0.55 +
-            valueNoise(x + 23, y + 41, 18) * 0.35 +
-            hash(x * 3 + 17, y * 5 + 29) * 0.1;
+            valueNoise(x, y, 8) * 0.55 +
+            valueNoise(x + 20, y + 40, 16) * 0.35 +
+            hash(x * 3 + 10, y * 5 + 20) * 0.1;
           let color = base;
-          if (value > 0.66) color = light;
-          else if (value < 0.34) color = shadow;
-          else if (value < 0.43) color = mid;
+          if (value > 0.65) color = light;
+          else if (value < 0.35) color = shadow;
+          else if (value < 0.45) color = mid;
 
           const index = (y * textureSize + x) * 4;
           image.data[index] = color[0];
@@ -116,19 +116,12 @@ export default function Home() {
     const snowTexture = new THREE.CanvasTexture(snowCanvas);
     snowTexture.wrapS = THREE.RepeatWrapping;
     snowTexture.wrapT = THREE.RepeatWrapping;
-    snowTexture.repeat.set(20 / 12.5, 20 / 12.5);
     snowTexture.magFilter = THREE.NearestFilter;
     snowTexture.minFilter = THREE.NearestFilter;
     snowTexture.generateMipmaps = false;
     snowTexture.colorSpace = THREE.SRGBColorSpace;
 
-    const groundMesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(20, 20),
-      new THREE.MeshLambertMaterial({ map: snowTexture, color: 0xffffff })
-    );
-    groundMesh.rotation.x = -Math.PI / 2;
-    groundMesh.receiveShadow = true;
-    scene.add(groundMesh);
+    const floorMaterial = new THREE.MeshLambertMaterial({ map: snowTexture, color: 0xffffff });
 
     const ballRadius = 0.33;
     const randomColor = new THREE.Color().setHSL(Math.random(), 0.7, 0.55);
@@ -182,12 +175,78 @@ export default function Home() {
       angularDamping: 1,
     });
 
-    const groundBody = rigidBody.create(world, {
+    const activeSeed = 67676;
+    const hash2D = (x: number, z: number, salt = 0) => {
+      let value = (x * 1619 + z * 31337 + salt * 1013 + activeSeed * 7919) | 0;
+      value = Math.imul(value ^ (value >>> 16), 0x45d9f3b);
+      value = Math.imul(value ^ (value >>> 16), 0x45d9f3b);
+      value ^= value >>> 16;
+      return (value >>> 0) / 4294967296;
+    };
+    const valueNoise2D = (x: number, z: number, cellSize: number, salt: number) => {
+      const gridX = x / cellSize;
+      const gridZ = z / cellSize;
+      const x0 = Math.floor(gridX);
+      const z0 = Math.floor(gridZ);
+      const tx = smoothstep(gridX - x0);
+      const tz = smoothstep(gridZ - z0);
+      return lerp(
+        lerp(hash2D(x0, z0, salt), hash2D(x0 + 1, z0, salt), tx),
+        lerp(hash2D(x0, z0 + 1, salt), hash2D(x0 + 1, z0 + 1, salt), tx),
+        tz
+      );
+    };
+    const terrainHeight = (x: number, z: number) => {
+      const height =
+        valueNoise2D(x + 100, z - 100, 128, 1) * 4 +
+        valueNoise2D(x - 200, z + 200, 32, 2) * 1.5 +
+        valueNoise2D(x + 50, z + 50, 8, 3) * 0.5;
+      const distance = Math.hypot(x, z);
+      return height * smoothstep(THREE.MathUtils.clamp((distance - 12) / 30, 0, 1));
+    };
+
+    const chunkSize = 32;
+    const segments = 16;
+    const step = chunkSize / segments;
+    const positions: number[] = [];
+    const uvs: number[] = [];
+    const indices: number[] = [];
+
+    for (let z = 0; z <= segments; z++) {
+      for (let x = 0; x <= segments; x++) {
+        const worldX = -chunkSize / 2 + x * step;
+        const worldZ = -chunkSize / 2 + z * step;
+        positions.push(worldX, terrainHeight(worldX, worldZ), worldZ);
+        uvs.push(worldX / 12.5, worldZ / 12.5);
+      }
+    }
+
+    for (let z = 0; z < segments; z++) {
+      for (let x = 0; x < segments; x++) {
+        const topLeft = z * (segments + 1) + x;
+        const topRight = topLeft + 1;
+        const bottomLeft = topLeft + segments + 1;
+        const bottomRight = bottomLeft + 1;
+        indices.push(topLeft, bottomLeft, topRight, topRight, bottomLeft, bottomRight);
+      }
+    }
+
+    const terrainGeometry = new THREE.BufferGeometry();
+    terrainGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    terrainGeometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    terrainGeometry.setIndex(indices);
+    terrainGeometry.computeVertexNormals();
+
+    const terrainMesh = new THREE.Mesh(terrainGeometry, floorMaterial);
+    terrainMesh.receiveShadow = true;
+    scene.add(terrainMesh);
+
+    const terrainBody = rigidBody.create(world, {
       motionType: MotionType.STATIC,
       objectLayer: staticLayer,
-      shape: box.create({ halfExtents: [10, 0.5, 10] }),
-      position: [0, -0.5, 0],
-      friction: 1,
+      shape: triangleMesh.create({ positions, indices }),
+      position: [0, 0, 0],
+      friction: 1.8,
     });
 
     const resize = () => {
@@ -395,10 +454,15 @@ export default function Home() {
             markerVisible = false;
           }
 
-          const isGrounded =
-            Math.abs(body.position[1] - ballRadius) <= 0.04 &&
-            Math.abs(body.position[0]) <= 10 - ballRadius &&
-            Math.abs(body.position[2]) <= 10 - ballRadius;
+          const isGrounded = world.contacts.contacts.some(
+            (contact) =>
+              contact.contactIndex !== -1 &&
+              contact.lastProcessedFrame === world.contacts.frameStamp &&
+              ((contact.bodyIdA === ballBody.id &&
+                contact.bodyIdB === terrainBody.id) ||
+                (contact.bodyIdA === terrainBody.id &&
+                  contact.bodyIdB === ballBody.id))
+          );
 
           if ((keys.has('Space') || pointerJump) && isGrounded) {
             const velocity = body.motionProperties.linearVelocity;
@@ -458,10 +522,10 @@ export default function Home() {
       renderer.domElement.removeEventListener('lostpointercapture', onLostPointerCapture);
       renderer.setAnimationLoop(null);
       rigidBody.remove(world, ballBody);
-      rigidBody.remove(world, groundBody);
+      rigidBody.remove(world, terrainBody);
       renderer.dispose();
-      groundMesh.geometry.dispose();
-      groundMesh.material.dispose();
+      terrainGeometry.dispose();
+      floorMaterial.dispose();
       snowTexture.dispose();
       ballMesh.geometry.dispose();
       ballMesh.material.dispose();
