@@ -206,48 +206,105 @@ export default function Home() {
     };
 
     const chunkSize = 32;
+    const chunkRadius = 4;
     const segments = 16;
     const step = chunkSize / segments;
-    const positions: number[] = [];
-    const uvs: number[] = [];
-    const indices: number[] = [];
-
-    for (let z = 0; z <= segments; z++) {
-      for (let x = 0; x <= segments; x++) {
-        const worldX = -chunkSize / 2 + x * step;
-        const worldZ = -chunkSize / 2 + z * step;
-        positions.push(worldX, terrainHeight(worldX, worldZ), worldZ);
-        uvs.push(worldX / 12.5, worldZ / 12.5);
+    const activeChunks = new Map<
+      string,
+      {
+        x: number;
+        z: number;
+        mesh: THREE.Mesh;
+        body: ReturnType<typeof rigidBody.create>;
       }
-    }
+    >();
+    const terrainBodyIds = new Set<number>();
+    let currentChunkX: number | null = null;
+    let currentChunkZ: number | null = null;
 
-    for (let z = 0; z < segments; z++) {
-      for (let x = 0; x < segments; x++) {
-        const topLeft = z * (segments + 1) + x;
-        const topRight = topLeft + 1;
-        const bottomLeft = topLeft + segments + 1;
-        const bottomRight = bottomLeft + 1;
-        indices.push(topLeft, bottomLeft, topRight, topRight, bottomLeft, bottomRight);
+    const loadChunk = (chunkX: number, chunkZ: number) => {
+      const key = `${chunkX},${chunkZ}`;
+      if (activeChunks.has(key)) return;
+
+      const positions: number[] = [];
+      const uvs: number[] = [];
+      const indices: number[] = [];
+
+      for (let z = 0; z <= segments; z++) {
+        for (let x = 0; x <= segments; x++) {
+          const worldX = chunkX * chunkSize - chunkSize / 2 + x * step;
+          const worldZ = chunkZ * chunkSize - chunkSize / 2 + z * step;
+          positions.push(worldX, terrainHeight(worldX, worldZ), worldZ);
+          uvs.push(worldX / 12.5, worldZ / 12.5);
+        }
       }
-    }
 
-    const terrainGeometry = new THREE.BufferGeometry();
-    terrainGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    terrainGeometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-    terrainGeometry.setIndex(indices);
-    terrainGeometry.computeVertexNormals();
+      for (let z = 0; z < segments; z++) {
+        for (let x = 0; x < segments; x++) {
+          const topLeft = z * (segments + 1) + x;
+          const topRight = topLeft + 1;
+          const bottomLeft = topLeft + segments + 1;
+          const bottomRight = bottomLeft + 1;
+          indices.push(topLeft, bottomLeft, topRight, topRight, bottomLeft, bottomRight);
+        }
+      }
 
-    const terrainMesh = new THREE.Mesh(terrainGeometry, floorMaterial);
-    terrainMesh.receiveShadow = true;
-    scene.add(terrainMesh);
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      geometry.setIndex(indices);
+      geometry.computeVertexNormals();
 
-    const terrainBody = rigidBody.create(world, {
-      motionType: MotionType.STATIC,
-      objectLayer: staticLayer,
-      shape: triangleMesh.create({ positions, indices }),
-      position: [0, 0, 0],
-      friction: 1.8,
-    });
+      const mesh = new THREE.Mesh(geometry, floorMaterial);
+      mesh.receiveShadow = true;
+      scene.add(mesh);
+
+      const body = rigidBody.create(world, {
+        motionType: MotionType.STATIC,
+        objectLayer: staticLayer,
+        shape: triangleMesh.create({ positions, indices }),
+        position: [0, 0, 0],
+        friction: 1.8,
+      });
+
+      terrainBodyIds.add(body.id);
+      activeChunks.set(key, { x: chunkX, z: chunkZ, mesh, body });
+    };
+
+    const unloadChunk = (key: string) => {
+      const chunk = activeChunks.get(key);
+      if (!chunk) return;
+
+      scene.remove(chunk.mesh);
+      chunk.mesh.geometry.dispose();
+      terrainBodyIds.delete(chunk.body.id);
+      rigidBody.remove(world, chunk.body);
+      activeChunks.delete(key);
+    };
+
+    const updateChunks = (worldX: number, worldZ: number) => {
+      const centerX = Math.floor((worldX + chunkSize / 2) / chunkSize);
+      const centerZ = Math.floor((worldZ + chunkSize / 2) / chunkSize);
+      if (centerX === currentChunkX && centerZ === currentChunkZ) return;
+      currentChunkX = centerX;
+      currentChunkZ = centerZ;
+
+      for (let x = -chunkRadius; x <= chunkRadius; x++) {
+        for (let z = -chunkRadius; z <= chunkRadius; z++) {
+          loadChunk(centerX + x, centerZ + z);
+        }
+      }
+
+      for (const [key, chunk] of activeChunks) {
+        const distance = Math.max(
+          Math.abs(chunk.x - centerX),
+          Math.abs(chunk.z - centerZ)
+        );
+        if (distance > chunkRadius + 1) unloadChunk(key);
+      }
+    };
+
+    updateChunks(0, 0);
 
     const resize = () => {
       const { clientWidth, clientHeight } = container;
@@ -459,8 +516,8 @@ export default function Home() {
               contact.contactIndex !== -1 &&
               contact.lastProcessedFrame === world.contacts.frameStamp &&
               ((contact.bodyIdA === ballBody.id &&
-                contact.bodyIdB === terrainBody.id) ||
-                (contact.bodyIdA === terrainBody.id &&
+                terrainBodyIds.has(contact.bodyIdB)) ||
+                (terrainBodyIds.has(contact.bodyIdA) &&
                   contact.bodyIdB === ballBody.id))
           );
 
@@ -477,6 +534,7 @@ export default function Home() {
 
       const body = rigidBody.get(world, ballBody.id);
       if (body) {
+        updateChunks(body.position[0], body.position[2]);
         ballMesh.position.fromArray(body.position);
         ballMesh.quaternion.fromArray(body.quaternion);
 
@@ -522,9 +580,8 @@ export default function Home() {
       renderer.domElement.removeEventListener('lostpointercapture', onLostPointerCapture);
       renderer.setAnimationLoop(null);
       rigidBody.remove(world, ballBody);
-      rigidBody.remove(world, terrainBody);
+      for (const key of activeChunks.keys()) unloadChunk(key);
       renderer.dispose();
-      terrainGeometry.dispose();
       floorMaterial.dispose();
       snowTexture.dispose();
       ballMesh.geometry.dispose();
