@@ -92,6 +92,9 @@ export default function Home() {
     window.addEventListener('resize', resize);
 
     const keys = new Set<string>();
+    let targetZoom = 0.4;
+    camera.zoom = targetZoom;
+    camera.updateProjectionMatrix();
 
     const onKeyDown = (event: KeyboardEvent) => {
       keys.add(event.code);
@@ -106,29 +109,62 @@ export default function Home() {
       keys.clear();
     };
 
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const delta =
+        event.deltaY *
+        (event.deltaMode === WheelEvent.DOM_DELTA_LINE
+          ? 16
+          : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+            ? window.innerHeight
+            : 1);
+      targetZoom = THREE.MathUtils.clamp(
+        targetZoom * Math.exp(-delta * 0.001),
+        0.15,
+        2.5
+      );
+    };
+
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('blur', clearKeys);
+    renderer.domElement.addEventListener('wheel', onWheel, { passive: false });
 
     let lastTime = performance.now();
     let accumulator = 0;
     const physicsStep = 1 / 120;
     const movement = new THREE.Vector3();
+    const cameraForward = new THREE.Vector3(0, 0, -1);
+    const cameraRight = new THREE.Vector3(1, 0, 0);
+    const cameraPosition = new THREE.Vector3();
+    const cameraTarget = new THREE.Vector3();
+    let cameraYaw = 0;
 
     renderer.setAnimationLoop(() => {
       const now = performance.now();
-      accumulator += Math.min((now - lastTime) / 1000, 0.1);
+      const frameDelta = Math.min((now - lastTime) / 1000, 0.1);
+      accumulator += frameDelta;
       lastTime = now;
 
       while (accumulator >= physicsStep) {
+        const rotation = Number(keys.has('KeyE')) - Number(keys.has('KeyQ'));
+        cameraYaw += rotation * 1.8 * physicsStep;
+        cameraForward.set(Math.sin(cameraYaw), 0, -Math.cos(cameraYaw));
+        cameraRight.set(Math.cos(cameraYaw), 0, Math.sin(cameraYaw));
+
         const body = rigidBody.get(world, ballBody.id);
         if (body) {
-          movement.set(
+          const moveRight =
             Number(keys.has('KeyD') || keys.has('ArrowRight')) -
-              Number(keys.has('KeyA') || keys.has('ArrowLeft')),
+            Number(keys.has('KeyA') || keys.has('ArrowLeft'));
+          const moveForward =
+            Number(keys.has('KeyW') || keys.has('ArrowUp')) -
+            Number(keys.has('KeyS') || keys.has('ArrowDown'));
+
+          movement.set(
+            cameraRight.x * moveRight + cameraForward.x * moveForward,
             0,
-            Number(keys.has('KeyS') || keys.has('ArrowDown')) -
-              Number(keys.has('KeyW') || keys.has('ArrowUp'))
+            cameraRight.z * moveRight + cameraForward.z * moveForward
           );
 
           if (movement.lengthSq() > 0) {
@@ -156,8 +192,21 @@ export default function Home() {
       if (body) {
         ballMesh.position.fromArray(body.position);
         ballMesh.quaternion.fromArray(body.quaternion);
+
+        cameraTarget.fromArray(body.position);
+        cameraPosition.set(
+          body.position[0] - cameraForward.x * 5,
+          body.position[1] + 6,
+          body.position[2] - cameraForward.z * 5
+        );
+        camera.position.copy(cameraPosition);
+        camera.lookAt(cameraTarget);
       }
 
+      if (Math.abs(targetZoom - camera.zoom) > 0.0001) {
+        camera.zoom += (targetZoom - camera.zoom) * (1 - Math.exp(-10 * frameDelta));
+        camera.updateProjectionMatrix();
+      }
       renderer.render(scene, camera);
     });
 
@@ -166,6 +215,7 @@ export default function Home() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', clearKeys);
+      renderer.domElement.removeEventListener('wheel', onWheel);
       renderer.setAnimationLoop(null);
       rigidBody.remove(world, ballBody);
       rigidBody.remove(world, groundBody);
