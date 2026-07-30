@@ -53,6 +53,7 @@ export default function Home() {
 
     // Crashcat settings
     const settings = createWorldSettings();
+    settings.gravity = [0, -14.7, 0];
     const dynamicBroadphase = addBroadphaseLayer(settings);
     const staticBroadphase = addBroadphaseLayer(settings);
     const dynamicLayer = addObjectLayer(settings, dynamicBroadphase);
@@ -64,14 +65,18 @@ export default function Home() {
       motionType: MotionType.DYNAMIC,
       objectLayer: dynamicLayer,
       shape: sphere.create({ radius: ballRadius }),
-      // Offset to see ball fall from above
-      position: [0, 2, 0],
+      position: [0, 2, 0], // Offset to see ball fall from above
+      friction: 1,
+      linearDamping: 1,
+      angularDamping: 1,
     });
 
     const groundBody = rigidBody.create(world, {
       motionType: MotionType.STATIC,
       objectLayer: staticLayer,
       shape: box.create({ halfExtents: [10, 0.5, 10] }),
+      position: [0, -0.5, 0],
+      friction: 1,
     });
 
     const resize = () => {
@@ -86,9 +91,29 @@ export default function Home() {
     resize();
     window.addEventListener('resize', resize);
 
+    const keys = new Set<string>();
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      keys.add(event.code);
+      if (event.code === 'Space') event.preventDefault();
+    };
+
+    const onKeyUp = (event: KeyboardEvent) => {
+      keys.delete(event.code);
+    };
+
+    const clearKeys = () => {
+      keys.clear();
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', clearKeys);
+
     let lastTime = performance.now();
     let accumulator = 0;
-    const physicsStep = 1 / 60;
+    const physicsStep = 1 / 120;
+    const movement = new THREE.Vector3();
 
     renderer.setAnimationLoop(() => {
       const now = performance.now();
@@ -96,6 +121,33 @@ export default function Home() {
       lastTime = now;
 
       while (accumulator >= physicsStep) {
+        const body = rigidBody.get(world, ballBody.id);
+        if (body) {
+          movement.set(
+            Number(keys.has('KeyD') || keys.has('ArrowRight')) -
+              Number(keys.has('KeyA') || keys.has('ArrowLeft')),
+            0,
+            Number(keys.has('KeyS') || keys.has('ArrowDown')) -
+              Number(keys.has('KeyW') || keys.has('ArrowUp'))
+          );
+
+          if (movement.lengthSq() > 0) {
+            movement.normalize();
+            rigidBody.addForce(world, body, [movement.x * 500, 0, movement.z * 500], true);
+            rigidBody.addTorque(world, body, [movement.z * 50, 0, -movement.x * 50], true);
+          }
+
+          const isGrounded =
+            Math.abs(body.position[1] - ballRadius) <= 0.04 &&
+            Math.abs(body.position[0]) <= 10 - ballRadius &&
+            Math.abs(body.position[2]) <= 10 - ballRadius;
+
+          if (keys.has('Space') && isGrounded) {
+            const velocity = body.motionProperties.linearVelocity;
+            rigidBody.setLinearVelocity(world, body, [velocity[0], 7.5, velocity[2]]);
+          }
+        }
+
         updateWorld(world, {}, physicsStep);
         accumulator -= physicsStep;
       }
@@ -111,6 +163,9 @@ export default function Home() {
 
     return () => {
       window.removeEventListener('resize', resize);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', clearKeys);
       renderer.setAnimationLoop(null);
       rigidBody.remove(world, ballBody);
       rigidBody.remove(world, groundBody);
