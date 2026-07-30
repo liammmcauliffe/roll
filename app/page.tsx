@@ -26,30 +26,141 @@ export default function Home() {
     registerAll();
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xfffff);
+    scene.background = new THREE.Color(0xe0e2db);
+    scene.fog = new THREE.FogExp2(0xdbdbee, 0.05);
 
     const camera = new THREE.OrthographicCamera();
     camera.position.set(0, 6, 5);
     camera.lookAt(0, 0, 0);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    const renderer = new THREE.WebGLRenderer({ antialias: false });
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.BasicShadowMap;
+    renderer.domElement.style.width = '100%';
+    renderer.domElement.style.height = '100%';
+    renderer.domElement.style.display = 'block';
+    renderer.domElement.style.imageRendering = 'pixelated';
     container.appendChild(renderer.domElement);
 
-    scene.add(new THREE.HemisphereLight());
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x666666, 1.2));
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1.4);
+    directionalLight.castShadow = true;
+    directionalLight.shadow.camera.left = -35;
+    directionalLight.shadow.camera.right = 35;
+    directionalLight.shadow.camera.top = 35;
+    directionalLight.shadow.camera.bottom = -35;
+    directionalLight.shadow.camera.near = 0.5;
+    directionalLight.shadow.camera.far = 100;
+    directionalLight.shadow.mapSize.set(2048, 2048);
+    directionalLight.shadow.bias = 0.0001;
+    scene.add(directionalLight);
+    scene.add(directionalLight.target);
+
+    const textureSize = 128;
+    const snowCanvas = document.createElement('canvas');
+    snowCanvas.width = textureSize;
+    snowCanvas.height = textureSize;
+    const snowContext = snowCanvas.getContext('2d');
+
+    const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+    const smoothstep = (t: number) => t * t * (3 - 2 * t);
+    const hash = (x: number, y: number) => {
+      const value = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+      return value - Math.floor(value);
+    };
+    const valueNoise = (x: number, y: number, cells: number) => {
+      const sampleX = (x / textureSize) * cells;
+      const sampleY = (y / textureSize) * cells;
+      const x0 = Math.floor(sampleX);
+      const y0 = Math.floor(sampleY);
+      const tx = smoothstep(sampleX - x0);
+      const ty = smoothstep(sampleY - y0);
+      const wrap = (value: number) => ((value % cells) + cells) % cells;
+      const top = lerp(hash(wrap(x0), wrap(y0)), hash(wrap(x0 + 1), wrap(y0)), tx);
+      const bottom = lerp(
+        hash(wrap(x0), wrap(y0 + 1)),
+        hash(wrap(x0 + 1), wrap(y0 + 1)),
+        tx
+      );
+      return lerp(top, bottom, ty);
+    };
+
+    if (snowContext) {
+      const image = snowContext.createImageData(textureSize, textureSize);
+      const light = [229, 233, 231];
+      const base = [220, 226, 224];
+      const mid = [214, 221, 219];
+      const shadow = [207, 215, 214];
+
+      for (let y = 0; y < textureSize; y++) {
+        for (let x = 0; x < textureSize; x++) {
+          const value =
+            valueNoise(x, y, 7) * 0.55 +
+            valueNoise(x + 23, y + 41, 18) * 0.35 +
+            hash(x * 3 + 17, y * 5 + 29) * 0.1;
+          let color = base;
+          if (value > 0.66) color = light;
+          else if (value < 0.34) color = shadow;
+          else if (value < 0.43) color = mid;
+
+          const index = (y * textureSize + x) * 4;
+          image.data[index] = color[0];
+          image.data[index + 1] = color[1];
+          image.data[index + 2] = color[2];
+          image.data[index + 3] = 255;
+        }
+      }
+      snowContext.putImageData(image, 0, 0);
+    }
+
+    const snowTexture = new THREE.CanvasTexture(snowCanvas);
+    snowTexture.wrapS = THREE.RepeatWrapping;
+    snowTexture.wrapT = THREE.RepeatWrapping;
+    snowTexture.repeat.set(20 / 12.5, 20 / 12.5);
+    snowTexture.magFilter = THREE.NearestFilter;
+    snowTexture.minFilter = THREE.NearestFilter;
+    snowTexture.generateMipmaps = false;
+    snowTexture.colorSpace = THREE.SRGBColorSpace;
 
     const groundMesh = new THREE.Mesh(
       new THREE.PlaneGeometry(20, 20),
-      new THREE.MeshStandardMaterial({ color: 0xffffff })
+      new THREE.MeshLambertMaterial({ map: snowTexture, color: 0xffffff })
     );
     groundMesh.rotation.x = -Math.PI / 2;
+    groundMesh.receiveShadow = true;
     scene.add(groundMesh);
 
     const ballRadius = 0.33;
+    const randomColor = new THREE.Color().setHSL(Math.random(), 0.7, 0.55);
     const ballMesh = new THREE.Mesh(
       new THREE.IcosahedronGeometry(ballRadius, 1),
-      new THREE.MeshLambertMaterial({ color: 0xff0000, flatShading: true })
+      new THREE.MeshLambertMaterial({ color: randomColor, flatShading: true })
     );
+    ballMesh.castShadow = true;
     scene.add(ballMesh);
+
+    const markerGeometry = new THREE.BufferGeometry();
+    markerGeometry.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute(
+        [
+          -0.14, 0.06, -0.14, 0.14, 0.06, -0.14, -0.14, -0.06, -0.14, 0.14, -0.06,
+          -0.14, 0, 0.06, 0.22, 0, -0.06, 0.22,
+        ],
+        3
+      )
+    );
+    markerGeometry.setIndex([
+      0, 4, 1, 2, 3, 5, 0, 1, 3, 0, 3, 2, 0, 2, 5, 0, 5, 4, 1, 4, 5, 1, 5, 3,
+    ]);
+    markerGeometry.computeVertexNormals();
+    const directionMarker = new THREE.Mesh(
+      markerGeometry,
+      new THREE.MeshLambertMaterial({ color: randomColor, flatShading: true })
+    );
+    directionMarker.visible = false;
+    directionMarker.renderOrder = 1;
+    scene.add(directionMarker);
 
     // Crashcat settings
     const settings = createWorldSettings();
@@ -84,8 +195,11 @@ export default function Home() {
       const aspect = clientWidth / clientHeight;
       camera.left = -aspect;
       camera.right = aspect;
+      camera.near = -50;
+      camera.far = 100;
       camera.updateProjectionMatrix();
-      renderer.setSize(clientWidth, clientHeight, false);
+      const renderHeight = Math.min(280, clientHeight);
+      renderer.setSize(Math.round(renderHeight * aspect), renderHeight, false);
     };
 
     resize();
@@ -225,6 +339,9 @@ export default function Home() {
     const cameraRight = new THREE.Vector3(1, 0, 0);
     const cameraPosition = new THREE.Vector3();
     const cameraTarget = new THREE.Vector3();
+    const markerDirection = new THREE.Vector3();
+    const markerForward = new THREE.Vector3(0, 0, 1);
+    let markerVisible = false;
     let cameraYaw = 0;
 
     renderer.setAnimationLoop(() => {
@@ -260,6 +377,8 @@ export default function Home() {
 
           if (movement.lengthSq() > 0 && strength > 0) {
             movement.normalize();
+            markerDirection.copy(movement);
+            markerVisible = true;
             rigidBody.addForce(
               world,
               body,
@@ -272,6 +391,8 @@ export default function Home() {
               [movement.z * 50 * strength, 0, -movement.x * 50 * strength],
               true
             );
+          } else {
+            markerVisible = false;
           }
 
           const isGrounded =
@@ -295,6 +416,12 @@ export default function Home() {
         ballMesh.position.fromArray(body.position);
         ballMesh.quaternion.fromArray(body.quaternion);
 
+        directionMarker.visible = markerVisible;
+        if (markerVisible) {
+          directionMarker.position.fromArray(body.position).addScaledVector(markerDirection, 0.72);
+          directionMarker.quaternion.setFromUnitVectors(markerForward, markerDirection);
+        }
+
         cameraTarget.fromArray(body.position);
         cameraPosition.set(
           body.position[0] - cameraForward.x * 5,
@@ -303,6 +430,12 @@ export default function Home() {
         );
         camera.position.copy(cameraPosition);
         camera.lookAt(cameraTarget);
+        directionalLight.position.set(
+          camera.position.x + 8,
+          camera.position.y + 16,
+          camera.position.z - 6
+        );
+        directionalLight.target.position.fromArray(body.position);
       }
 
       if (Math.abs(targetZoom - camera.zoom) > 0.0001) {
@@ -329,8 +462,11 @@ export default function Home() {
       renderer.dispose();
       groundMesh.geometry.dispose();
       groundMesh.material.dispose();
+      snowTexture.dispose();
       ballMesh.geometry.dispose();
       ballMesh.material.dispose();
+      markerGeometry.dispose();
+      directionMarker.material.dispose();
       container.removeChild(renderer.domElement);
     };
   }, []);
