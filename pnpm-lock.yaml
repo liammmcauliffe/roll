@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      crashcat:
+        specifier: ^0.0.5
+        version: 0.0.5(three@0.185.1)
       next:
         specifier: 16.2.12
         version: 16.2.12(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -270,6 +273,14 @@ packages:
   client-only@0.0.1:
     resolution: {integrity: sha512-IV3Ou0jSMzZrd3pZ48nLkT9DA7Ag1pnPzaiQhpW7c3RbcqqzvzzVu+L8gfqMp/8IM2MQtSiqaCxrrcfu8I8rMA==}
 
+  crashcat@0.0.5:
+    resolution: {integrity: sha512-8BcoWz5sfUxUTCzFlBImHNsWei4Wso18MOHkjeZjgEGCq+SPlbYr65USCCeVsEOTq1GM6Aai/HHvmgfpKw61dQ==}
+    peerDependencies:
+      three: '>=0.182.0'
+    peerDependenciesMeta:
+      three:
+        optional: true
+
   csstype@3.2.3:
     resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
 
@@ -279,6 +290,9 @@ packages:
 
   fflate@0.8.3:
     resolution: {integrity: sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==}
+
+  mathcat@0.0.13:
+    resolution: {integrity: sha512-d5KhlEP3p6/ACSGpgwSBPCiiubdVXYb95mkK/rfQd5DirqHjMTYpvX5AP3vZXiQGO4y9DomRgSjOYwXW3dhA+w==}
 
   meshoptimizer@1.1.1:
     resolution: {integrity: sha512-oRFNWJRDA/WTrVj7NWvqa5HqE1t9MYDj2VaWirQCzCCrAd2GHrqR/sQezCxiWATPNlKTcRaPRHPJwIRoPBAp5g==}
@@ -537,12 +551,20 @@ snapshots:
 
   client-only@0.0.1: {}
 
+  crashcat@0.0.5(three@0.185.1):
+    dependencies:
+      mathcat: 0.0.13
+    optionalDependencies:
+      three: 0.185.1
+
   csstype@3.2.3: {}
 
   detect-libc@2.1.2:
     optional: true
 
   fflate@0.8.3: {}
+
+  mathcat@0.0.13: {}
 
   meshoptimizer@1.1.1: {}
 

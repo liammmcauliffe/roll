@@ -1,6 +1,19 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
+import {
+  addBroadphaseLayer,
+  addObjectLayer,
+  box,
+  createWorld,
+  createWorldSettings,
+  enableCollision,
+  MotionType,
+  registerAll,
+  rigidBody,
+  sphere,
+  updateWorld,
+} from 'crashcat';
 import * as THREE from 'three';
 
 export default function Home() {
@@ -9,6 +22,8 @@ export default function Home() {
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+
+    registerAll();
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0xfffff);
@@ -22,21 +37,42 @@ export default function Home() {
 
     scene.add(new THREE.HemisphereLight());
 
-    const ground = new THREE.Mesh(
+    const groundMesh = new THREE.Mesh(
       new THREE.PlaneGeometry(20, 20),
       new THREE.MeshStandardMaterial({ color: 0xffffff })
     );
-    ground.rotation.x = -Math.PI / 2;
-    scene.add(ground);
+    groundMesh.rotation.x = -Math.PI / 2;
+    scene.add(groundMesh);
 
-    const ball = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(0.33, 1),
+    const ballRadius = 0.33;
+    const ballMesh = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(ballRadius, 1),
       new THREE.MeshLambertMaterial({ color: 0xff0000, flatShading: true })
     );
-    // Position the ball above the ground
-    ball.position.y = 0.33;
-    ball.castShadow = true;
-    scene.add(ball);
+    scene.add(ballMesh);
+
+    // Crashcat settings
+    const settings = createWorldSettings();
+    const dynamicBroadphase = addBroadphaseLayer(settings);
+    const staticBroadphase = addBroadphaseLayer(settings);
+    const dynamicLayer = addObjectLayer(settings, dynamicBroadphase);
+    const staticLayer = addObjectLayer(settings, staticBroadphase);
+    enableCollision(settings, dynamicLayer, staticLayer);
+    const world = createWorld(settings);
+
+    const ballBody = rigidBody.create(world, {
+      motionType: MotionType.DYNAMIC,
+      objectLayer: dynamicLayer,
+      shape: sphere.create({ radius: ballRadius }),
+      // Offset to see ball fall from above
+      position: [0, 2, 0],
+    });
+
+    const groundBody = rigidBody.create(world, {
+      motionType: MotionType.STATIC,
+      objectLayer: staticLayer,
+      shape: box.create({ halfExtents: [10, 0.5, 10] }),
+    });
 
     const resize = () => {
       const { clientWidth, clientHeight } = container;
@@ -49,17 +85,40 @@ export default function Home() {
 
     resize();
     window.addEventListener('resize', resize);
-    renderer.setAnimationLoop(() => renderer.render(scene, camera));
 
-    // Cleanup
+    let lastTime = performance.now();
+    let accumulator = 0;
+    const physicsStep = 1 / 60;
+
+    renderer.setAnimationLoop(() => {
+      const now = performance.now();
+      accumulator += Math.min((now - lastTime) / 1000, 0.1);
+      lastTime = now;
+
+      while (accumulator >= physicsStep) {
+        updateWorld(world, {}, physicsStep);
+        accumulator -= physicsStep;
+      }
+
+      const body = rigidBody.get(world, ballBody.id);
+      if (body) {
+        ballMesh.position.fromArray(body.position);
+        ballMesh.quaternion.fromArray(body.quaternion);
+      }
+
+      renderer.render(scene, camera);
+    });
+
     return () => {
       window.removeEventListener('resize', resize);
       renderer.setAnimationLoop(null);
+      rigidBody.remove(world, ballBody);
+      rigidBody.remove(world, groundBody);
       renderer.dispose();
-      ground.geometry.dispose();
-      ground.material.dispose();
-      ball.geometry.dispose();
-      ball.material.dispose();
+      groundMesh.geometry.dispose();
+      groundMesh.material.dispose();
+      ballMesh.geometry.dispose();
+      ballMesh.material.dispose();
       container.removeChild(renderer.domElement);
     };
   }, []);
