@@ -92,6 +92,11 @@ export default function Home() {
     window.addEventListener('resize', resize);
 
     const keys = new Set<string>();
+    let pointerId: number | null = null;
+    let pointerStrength = 0;
+    let pointerJump = false;
+    const pointerDirection = { right: 0, forward: 0 };
+    const pointerStart = { x: 0, y: 0, time: 0, moved: false };
     let targetZoom = 0.4;
     camera.zoom = targetZoom;
     camera.updateProjectionMatrix();
@@ -107,6 +112,82 @@ export default function Home() {
 
     const clearKeys = () => {
       keys.clear();
+    };
+
+    const updatePointerDirection = (event: PointerEvent) => {
+      const bounds = renderer.domElement.getBoundingClientRect();
+      const body = rigidBody.get(world, ballBody.id);
+      if (!body) return;
+
+      const ballScreen = new THREE.Vector3(body.position[0], body.position[1], body.position[2]);
+      ballScreen.project(camera);
+      const ballX = bounds.left + ((ballScreen.x + 1) / 2) * bounds.width;
+      const ballY = bounds.top + ((1 - ballScreen.y) / 2) * bounds.height;
+      const dx = event.clientX - ballX;
+      const dy = event.clientY - ballY;
+      const distance = Math.hypot(dx, dy);
+      const deadZone = 16;
+      const maxDistance = Math.min(bounds.width, bounds.height) * 0.3;
+      const viewWidth = (camera.right - camera.left) / camera.zoom;
+      const viewHeight = (camera.top - camera.bottom) / camera.zoom;
+
+      pointerStrength = THREE.MathUtils.clamp(
+        (distance - deadZone) / (maxDistance - deadZone),
+        0,
+        1
+      );
+      pointerDirection.right = (dx / bounds.width) * viewWidth;
+      pointerDirection.forward = (-dy / bounds.height) * viewHeight;
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+
+      pointerId = event.pointerId;
+      pointerStart.x = event.clientX;
+      pointerStart.y = event.clientY;
+      pointerStart.time = performance.now();
+      pointerStart.moved = false;
+      renderer.domElement.setPointerCapture(event.pointerId);
+      updatePointerDirection(event);
+      event.preventDefault();
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      if (event.pointerId !== pointerId) return;
+
+      if (
+        Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y) > 12
+      ) {
+        pointerStart.moved = true;
+      }
+      updatePointerDirection(event);
+    };
+
+    const onPointerUp = (event: PointerEvent) => {
+      if (event.pointerId !== pointerId) return;
+
+      const duration = performance.now() - pointerStart.time;
+      if (event.type === 'pointerup' && !pointerStart.moved && duration < 300) {
+        pointerJump = true;
+      }
+
+      const activePointerId = pointerId;
+      pointerId = null;
+      pointerStrength = 0;
+      pointerDirection.right = 0;
+      pointerDirection.forward = 0;
+      if (renderer.domElement.hasPointerCapture(activePointerId)) {
+        renderer.domElement.releasePointerCapture(activePointerId);
+      }
+    };
+
+    const onLostPointerCapture = (event: PointerEvent) => {
+      if (event.pointerId !== pointerId) return;
+      pointerId = null;
+      pointerStrength = 0;
+      pointerDirection.right = 0;
+      pointerDirection.forward = 0;
     };
 
     const onWheel = (event: WheelEvent) => {
@@ -129,6 +210,12 @@ export default function Home() {
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('blur', clearKeys);
     renderer.domElement.addEventListener('wheel', onWheel, { passive: false });
+    renderer.domElement.addEventListener('pointerdown', onPointerDown);
+    renderer.domElement.addEventListener('pointermove', onPointerMove);
+    renderer.domElement.addEventListener('pointerup', onPointerUp);
+    renderer.domElement.addEventListener('pointercancel', onPointerUp);
+    renderer.domElement.addEventListener('lostpointercapture', onLostPointerCapture);
+    renderer.domElement.style.touchAction = 'none';
 
     let lastTime = performance.now();
     let accumulator = 0;
@@ -154,12 +241,16 @@ export default function Home() {
 
         const body = rigidBody.get(world, ballBody.id);
         if (body) {
-          const moveRight =
-            Number(keys.has('KeyD') || keys.has('ArrowRight')) -
-            Number(keys.has('KeyA') || keys.has('ArrowLeft'));
-          const moveForward =
-            Number(keys.has('KeyW') || keys.has('ArrowUp')) -
-            Number(keys.has('KeyS') || keys.has('ArrowDown'));
+          const hasPointerMovement = pointerId !== null;
+          const moveRight = hasPointerMovement
+            ? pointerDirection.right
+            : Number(keys.has('KeyD') || keys.has('ArrowRight')) -
+              Number(keys.has('KeyA') || keys.has('ArrowLeft'));
+          const moveForward = hasPointerMovement
+            ? pointerDirection.forward
+            : Number(keys.has('KeyW') || keys.has('ArrowUp')) -
+              Number(keys.has('KeyS') || keys.has('ArrowDown'));
+          const strength = hasPointerMovement ? pointerStrength : 1;
 
           movement.set(
             cameraRight.x * moveRight + cameraForward.x * moveForward,
@@ -167,10 +258,20 @@ export default function Home() {
             cameraRight.z * moveRight + cameraForward.z * moveForward
           );
 
-          if (movement.lengthSq() > 0) {
+          if (movement.lengthSq() > 0 && strength > 0) {
             movement.normalize();
-            rigidBody.addForce(world, body, [movement.x * 500, 0, movement.z * 500], true);
-            rigidBody.addTorque(world, body, [movement.z * 50, 0, -movement.x * 50], true);
+            rigidBody.addForce(
+              world,
+              body,
+              [movement.x * 500 * strength, 0, movement.z * 500 * strength],
+              true
+            );
+            rigidBody.addTorque(
+              world,
+              body,
+              [movement.z * 50 * strength, 0, -movement.x * 50 * strength],
+              true
+            );
           }
 
           const isGrounded =
@@ -178,10 +279,11 @@ export default function Home() {
             Math.abs(body.position[0]) <= 10 - ballRadius &&
             Math.abs(body.position[2]) <= 10 - ballRadius;
 
-          if (keys.has('Space') && isGrounded) {
+          if ((keys.has('Space') || pointerJump) && isGrounded) {
             const velocity = body.motionProperties.linearVelocity;
             rigidBody.setLinearVelocity(world, body, [velocity[0], 7.5, velocity[2]]);
           }
+          pointerJump = false;
         }
 
         updateWorld(world, {}, physicsStep);
@@ -216,6 +318,11 @@ export default function Home() {
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', clearKeys);
       renderer.domElement.removeEventListener('wheel', onWheel);
+      renderer.domElement.removeEventListener('pointerdown', onPointerDown);
+      renderer.domElement.removeEventListener('pointermove', onPointerMove);
+      renderer.domElement.removeEventListener('pointerup', onPointerUp);
+      renderer.domElement.removeEventListener('pointercancel', onPointerUp);
+      renderer.domElement.removeEventListener('lostpointercapture', onLostPointerCapture);
       renderer.setAnimationLoop(null);
       rigidBody.remove(world, ballBody);
       rigidBody.remove(world, groundBody);
