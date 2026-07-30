@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import {
   addBroadphaseLayer,
   addObjectLayer,
+  box,
   createWorld,
   createWorldSettings,
   enableCollision,
@@ -15,6 +16,7 @@ import {
   updateWorld,
 } from 'crashcat';
 import * as THREE from 'three';
+import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 
 export default function Home() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -204,6 +206,77 @@ export default function Home() {
       const distance = Math.hypot(x, z);
       return height * smoothstep(THREE.MathUtils.clamp((distance - 12) / 30, 0, 1));
     };
+    const forestDensity = (x: number, z: number) =>
+      valueNoise2D(x, z, 64, 10) * 0.65 + valueNoise2D(x, z, 16, 20) * 0.35;
+
+    const textureLoader = new THREE.TextureLoader();
+    const loadPixelTexture = (url: string) => {
+      const texture = textureLoader.load(url);
+      texture.magFilter = THREE.NearestFilter;
+      texture.minFilter = THREE.NearestFilter;
+      texture.colorSpace = THREE.SRGBColorSpace;
+      return texture;
+    };
+    const treeTexture = loadPixelTexture('/models/tree-pine.png');
+    const rockTexture = loadPixelTexture('/models/forest-pack/rocks-diffuse.png');
+    const treeMaterial = new THREE.MeshLambertMaterial({
+      map: treeTexture,
+      transparent: true,
+      alphaTest: 0.5,
+      side: THREE.DoubleSide,
+      flatShading: true,
+    });
+    const rockMaterial = new THREE.MeshLambertMaterial({
+      map: rockTexture,
+      flatShading: true,
+    });
+
+    type Body = ReturnType<typeof rigidBody.create>;
+    type Pool = {
+      mesh: THREE.InstancedMesh;
+      size: number;
+      collider: [number, number, number];
+      nextSlot: number;
+      freeSlots: number[];
+    };
+    const pools: Pool[] = [];
+    const treePools: number[] = [];
+    const rockPools: number[] = [];
+    const instance = new THREE.Object3D();
+    const hiddenMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
+    let assetsReady = false;
+    let disposed = false;
+
+    const addPool = (
+      geometry: THREE.BufferGeometry,
+      material: THREE.Material,
+      max: number,
+      collider: Pool['collider']
+    ) => {
+      geometry.computeBoundingBox();
+      const bounds = geometry.boundingBox!;
+      const size = Math.max(
+        bounds.max.x - bounds.min.x,
+        bounds.max.y - bounds.min.y,
+        bounds.max.z - bounds.min.z
+      );
+      const mesh = new THREE.InstancedMesh(geometry, material, max);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      mesh.frustumCulled = false;
+      mesh.count = 0;
+      scene.add(mesh);
+      pools.push({ mesh, size, collider, nextSlot: 0, freeSlots: [] });
+      return pools.length - 1;
+    };
+
+    const leaseSlot = (pool: Pool) => {
+      const slot = pool.freeSlots.pop() ?? pool.nextSlot++;
+      if (slot >= pool.mesh.instanceMatrix.count) return -1;
+      pool.mesh.count = Math.max(pool.mesh.count, slot + 1);
+      return slot;
+    };
 
     const chunkSize = 32;
     const chunkRadius = 4;
@@ -215,12 +288,48 @@ export default function Home() {
         x: number;
         z: number;
         mesh: THREE.Mesh;
-        body: ReturnType<typeof rigidBody.create>;
+        body: Body;
+        instances: { poolIndex: number; slot: number; body: Body }[];
       }
     >();
     const terrainBodyIds = new Set<number>();
     let currentChunkX: number | null = null;
     let currentChunkZ: number | null = null;
+
+    const placeAsset = (
+      poolIndex: number,
+      worldX: number,
+      worldZ: number,
+      targetSize: number,
+      yaw: number,
+      instances: { poolIndex: number; slot: number; body: Body }[]
+    ) => {
+      const pool = pools[poolIndex];
+      const slot = leaseSlot(pool);
+      if (slot < 0) return;
+
+      const scale = targetSize / pool.size;
+      const worldY = terrainHeight(worldX, worldZ);
+      instance.position.set(worldX, worldY, worldZ);
+      instance.rotation.set(0, yaw, 0);
+      instance.scale.setScalar(scale);
+      instance.updateMatrix();
+      pool.mesh.setMatrixAt(slot, instance.matrix);
+      pool.mesh.instanceMatrix.needsUpdate = true;
+
+      const [halfX, halfHeight, halfZ] = pool.collider.map(
+        (extent) => extent * scale
+      ) as [number, number, number];
+      const body = rigidBody.create(world, {
+        motionType: MotionType.STATIC,
+        objectLayer: staticLayer,
+        shape: box.create({ halfExtents: [halfX, halfHeight, halfZ] }),
+        position: [worldX, worldY + halfHeight, worldZ],
+        quaternion: [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)],
+        friction: 1.8,
+      });
+      instances.push({ poolIndex, slot, body });
+    };
 
     const loadChunk = (chunkX: number, chunkZ: number) => {
       const key = `${chunkX},${chunkZ}`;
@@ -267,8 +376,54 @@ export default function Home() {
         friction: 1.8,
       });
 
+      const instances: { poolIndex: number; slot: number; body: Body }[] = [];
+      if (assetsReady) {
+        const treeCount = 20 + Math.floor(hash2D(chunkX, chunkZ, 100) * 10);
+        for (let index = 0; index < treeCount; index++) {
+          const worldX =
+            chunkX * chunkSize +
+            (hash2D(chunkX, chunkZ, index * 10 + 1) - 0.5) * chunkSize;
+          const worldZ =
+            chunkZ * chunkSize +
+            (hash2D(chunkX, chunkZ, index * 10 + 2) - 0.5) * chunkSize;
+          if (
+            Math.hypot(worldX, worldZ) < 5 ||
+            hash2D(chunkX, chunkZ, index * 10 + 3) > forestDensity(worldX, worldZ)
+          ) {
+            continue;
+          }
+
+          const poolIndex =
+            treePools[
+              Math.floor(hash2D(chunkX, chunkZ, index * 10 + 4) * treePools.length)
+            ];
+          const height = 3 + hash2D(chunkX, chunkZ, index * 10 + 5) * 8;
+          const yaw = hash2D(chunkX, chunkZ, index * 10 + 6) * Math.PI * 2;
+          placeAsset(poolIndex, worldX, worldZ, height, yaw, instances);
+        }
+
+        const rockCount = 2 + Math.floor(hash2D(chunkX, chunkZ, 200) * 4);
+        for (let index = 0; index < rockCount; index++) {
+          const worldX =
+            chunkX * chunkSize +
+            (hash2D(chunkX, chunkZ, index * 10 + 7) - 0.5) * chunkSize;
+          const worldZ =
+            chunkZ * chunkSize +
+            (hash2D(chunkX, chunkZ, index * 10 + 8) - 0.5) * chunkSize;
+          if (Math.hypot(worldX, worldZ) < 4) continue;
+
+          const poolIndex =
+            rockPools[
+              Math.floor(hash2D(chunkX, chunkZ, index * 10 + 9) * rockPools.length)
+            ];
+          const size = 0.5 + hash2D(chunkX, chunkZ, index * 10 + 10);
+          const yaw = hash2D(chunkX, chunkZ, index * 10 + 11) * Math.PI * 2;
+          placeAsset(poolIndex, worldX, worldZ, size, yaw, instances);
+        }
+      }
+
       terrainBodyIds.add(body.id);
-      activeChunks.set(key, { x: chunkX, z: chunkZ, mesh, body });
+      activeChunks.set(key, { x: chunkX, z: chunkZ, mesh, body, instances });
     };
 
     const unloadChunk = (key: string) => {
@@ -277,6 +432,13 @@ export default function Home() {
 
       scene.remove(chunk.mesh);
       chunk.mesh.geometry.dispose();
+      for (const prop of chunk.instances) {
+        const pool = pools[prop.poolIndex];
+        pool.mesh.setMatrixAt(prop.slot, hiddenMatrix);
+        pool.mesh.instanceMatrix.needsUpdate = true;
+        pool.freeSlots.push(prop.slot);
+        rigidBody.remove(world, prop.body);
+      }
       terrainBodyIds.delete(chunk.body.id);
       rigidBody.remove(world, chunk.body);
       activeChunks.delete(key);
@@ -305,6 +467,116 @@ export default function Home() {
     };
 
     updateChunks(0, 0);
+
+    let loadedAssetPacks = 0;
+    const finishAssetPack = () => {
+      loadedAssetPacks++;
+      if (
+        loadedAssetPacks < 2 ||
+        treePools.length === 0 ||
+        rockPools.length === 0 ||
+        disposed
+      ) {
+        return;
+      }
+
+      assetsReady = true;
+      const body = rigidBody.get(world, ballBody.id);
+      for (const key of Array.from(activeChunks.keys())) unloadChunk(key);
+      currentChunkX = null;
+      currentChunkZ = null;
+      updateChunks(body?.position[0] ?? 0, body?.position[2] ?? 0);
+    };
+
+    const prepareGeometry = (mesh: THREE.Mesh) => {
+      const geometry = mesh.geometry.clone();
+      geometry.applyMatrix4(mesh.matrixWorld);
+      geometry.computeVertexNormals();
+      geometry.computeBoundingBox();
+      const bounds = geometry.boundingBox!;
+      geometry.translate(
+        -(bounds.min.x + bounds.max.x) / 2,
+        -bounds.min.y,
+        -(bounds.min.z + bounds.max.z) / 2
+      );
+      geometry.computeBoundingBox();
+      return geometry;
+    };
+
+    const treeHalfWidth = (geometry: THREE.BufferGeometry) => {
+      const positions = geometry.attributes.position;
+      const bounds = geometry.boundingBox!;
+      const widths: number[] = [];
+
+      for (let index = 0; index < positions.count; index++) {
+        if (positions.getY(index) < bounds.max.y * 0.5) {
+          widths.push(
+            Math.max(Math.abs(positions.getX(index)), Math.abs(positions.getZ(index)))
+          );
+        }
+      }
+
+      widths.sort((a, b) => a - b);
+      return widths[Math.floor(widths.length * 0.3)] ?? 0.2;
+    };
+
+    const rockHalfExtents = (geometry: THREE.BufferGeometry) => {
+      const positions = geometry.attributes.position;
+      const bounds = geometry.boundingBox!;
+      let halfX = 0;
+      let halfZ = 0;
+
+      for (let index = 0; index < positions.count; index++) {
+        if (positions.getY(index) < bounds.max.y * 0.5) {
+          halfX = Math.max(halfX, Math.abs(positions.getX(index)));
+          halfZ = Math.max(halfZ, Math.abs(positions.getZ(index)));
+        }
+      }
+
+      return [halfX, halfZ] as const;
+    };
+
+    const fbxLoader = new FBXLoader();
+    fbxLoader.load('/models/trees-pine.fbx', (model) => {
+      if (disposed) return;
+      model.updateMatrixWorld(true);
+      const seen = new Set<string>();
+      model.traverse((node) => {
+        const mesh = node as THREE.Mesh;
+        if (!mesh.isMesh || seen.has(mesh.geometry.uuid)) return;
+        seen.add(mesh.geometry.uuid);
+
+        const geometry = prepareGeometry(mesh);
+        const bounds = geometry.boundingBox!;
+        const height = bounds.max.y - bounds.min.y;
+        const trunk = treeHalfWidth(geometry);
+        treePools.push(
+          addPool(geometry, treeMaterial, 4096, [trunk, height / 2, trunk])
+        );
+      });
+      finishAssetPack();
+    });
+
+    fbxLoader.load('/models/forest-pack/forest-game.fbx', (model) => {
+      if (disposed) return;
+      model.updateMatrixWorld(true);
+      model.traverse((node) => {
+        const mesh = node as THREE.Mesh;
+        if (!mesh.isMesh || !mesh.name.startsWith('Rock_')) return;
+
+        const geometry = prepareGeometry(mesh);
+        const bounds = geometry.boundingBox!;
+        const [halfX, halfZ] = rockHalfExtents(geometry);
+        rockPools.push(
+          addPool(geometry, rockMaterial, 512, [
+            halfX,
+            (bounds.max.y - bounds.min.y) / 2,
+            halfZ,
+          ])
+        );
+      });
+      finishAssetPack();
+    });
 
     const resize = () => {
       const { clientWidth, clientHeight } = container;
