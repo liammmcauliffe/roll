@@ -15,6 +15,7 @@ import {
   triangleMesh,
   updateWorld,
 } from 'crashcat';
+import { connect, type RoomConnection } from 'gatho/client';
 import * as THREE from 'three';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 
@@ -149,13 +150,22 @@ export default function Home() {
       0, 4, 1, 2, 3, 5, 0, 1, 3, 0, 3, 2, 0, 2, 5, 0, 5, 4, 1, 4, 5, 1, 5, 3,
     ]);
     markerGeometry.computeVertexNormals();
-    const directionMarker = new THREE.Mesh(
-      markerGeometry,
-      new THREE.MeshLambertMaterial({ color: randomColor, flatShading: true })
-    );
-    directionMarker.visible = false;
-    directionMarker.renderOrder = 1;
-    scene.add(directionMarker);
+
+    type PlayerTransform = {
+      type: 'transform';
+      color: number;
+      position: [number, number, number];
+      quaternion: [number, number, number, number];
+    };
+    type RemotePlayer = {
+      mesh: THREE.Mesh;
+      marker: THREE.Mesh;
+      body: ReturnType<typeof rigidBody.create>;
+      targetPosition: THREE.Vector3;
+      targetQuaternion: THREE.Quaternion;
+    };
+    const remotePlayers = new Map<string, RemotePlayer>();
+    const remoteGeometry = new THREE.IcosahedronGeometry(ballRadius, 1);
 
     // Crashcat settings
     const settings = createWorldSettings();
@@ -165,6 +175,7 @@ export default function Home() {
     const dynamicLayer = addObjectLayer(settings, dynamicBroadphase);
     const staticLayer = addObjectLayer(settings, staticBroadphase);
     enableCollision(settings, dynamicLayer, staticLayer);
+    enableCollision(settings, dynamicLayer, dynamicLayer);
     const world = createWorld(settings);
 
     const ballBody = rigidBody.create(world, {
@@ -719,6 +730,111 @@ export default function Home() {
     renderer.domElement.addEventListener('lostpointercapture', onLostPointerCapture);
     renderer.domElement.style.touchAction = 'none';
 
+    let room: RoomConnection | null = null;
+    let multiplayerCancelled = false;
+    let lastTransformSentAt = 0;
+
+    const removeRemotePlayer = (id: string) => {
+      const player = remotePlayers.get(id);
+      if (!player) return;
+      scene.remove(player.mesh);
+      scene.remove(player.marker);
+      (player.mesh.material as THREE.Material).dispose();
+      (player.marker.material as THREE.Material).dispose();
+      rigidBody.remove(world, player.body);
+      remotePlayers.delete(id);
+    };
+
+    const applyRemoteTransform = (id: string, transform: PlayerTransform) => {
+      if (id === room?.clientId) return;
+
+      let player = remotePlayers.get(id);
+      if (!player) {
+        const mesh = new THREE.Mesh(
+          remoteGeometry,
+          new THREE.MeshLambertMaterial({
+            color: transform.color,
+            flatShading: true,
+          })
+        );
+        mesh.castShadow = true;
+        mesh.position.fromArray(transform.position);
+        mesh.quaternion.fromArray(transform.quaternion);
+        scene.add(mesh);
+        const marker = new THREE.Mesh(
+          markerGeometry,
+          new THREE.MeshLambertMaterial({
+            color: transform.color,
+            flatShading: true,
+          })
+        );
+        marker.renderOrder = 1;
+        scene.add(marker);
+
+        player = {
+          mesh,
+          marker,
+          body: rigidBody.create(world, {
+            motionType: MotionType.KINEMATIC,
+            objectLayer: dynamicLayer,
+            shape: sphere.create({ radius: ballRadius }),
+            position: transform.position,
+            quaternion: transform.quaternion,
+          }),
+          targetPosition: new THREE.Vector3().fromArray(transform.position),
+          targetQuaternion: new THREE.Quaternion().fromArray(transform.quaternion),
+        };
+        remotePlayers.set(id, player);
+      }
+
+      (player.mesh.material as THREE.MeshLambertMaterial).color.setHex(transform.color);
+      (player.marker.material as THREE.MeshLambertMaterial).color.setHex(transform.color);
+      player.targetPosition.fromArray(transform.position);
+      player.targetQuaternion.fromArray(transform.quaternion);
+    };
+
+    const onRoomMessage = (message: string | ArrayBuffer) => {
+      if (multiplayerCancelled || typeof message !== 'string') return;
+
+      try {
+        const packet = JSON.parse(message);
+        if (packet.type === 'snapshot') {
+          for (const [id, transform] of packet.players as [string, PlayerTransform][]) {
+            applyRemoteTransform(id, transform);
+          }
+        } else if (packet.type === 'transform') {
+          applyRemoteTransform(packet.id, packet);
+        } else if (packet.type === 'leave') {
+          removeRemotePlayer(packet.id);
+        }
+      } catch {
+        // Ignore malformed server packets.
+      }
+    };
+
+    fetch(`${process.env.NEXT_PUBLIC_MULTIPLAYER_URL ?? 'http://localhost:7100'}/join`, {
+      method: 'POST',
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error('multiplayer unavailable');
+        return response.json() as Promise<{ url: string }>;
+      })
+      .then((seat) => {
+        if (!multiplayerCancelled) {
+          room = connect(seat.url, {
+            onMessage: onRoomMessage,
+            onClose: () => {
+              if (!multiplayerCancelled) {
+                for (const id of Array.from(remotePlayers.keys())) {
+                  removeRemotePlayer(id);
+                }
+              }
+            },
+          });
+        }
+      })
+      .catch(() => {});
+
     let lastTime = performance.now();
     let accumulator = 0;
     const physicsStep = 1 / 120;
@@ -729,7 +845,6 @@ export default function Home() {
     const cameraTarget = new THREE.Vector3();
     const markerDirection = new THREE.Vector3();
     const markerForward = new THREE.Vector3(0, 0, 1);
-    let markerVisible = false;
     let cameraYaw = 0;
 
     renderer.setAnimationLoop(() => {
@@ -765,8 +880,6 @@ export default function Home() {
 
           if (movement.lengthSq() > 0 && strength > 0) {
             movement.normalize();
-            markerDirection.copy(movement);
-            markerVisible = true;
             rigidBody.addForce(
               world,
               body,
@@ -779,8 +892,6 @@ export default function Home() {
               [movement.z * 50 * strength, 0, -movement.x * 50 * strength],
               true
             );
-          } else {
-            markerVisible = false;
           }
 
           const isGrounded = world.contacts.contacts.some(
@@ -800,6 +911,20 @@ export default function Home() {
           pointerJump = false;
         }
 
+        const interpolation = 1 - Math.exp(-12 * physicsStep);
+        for (const player of remotePlayers.values()) {
+          player.mesh.position.lerp(player.targetPosition, interpolation);
+          player.mesh.quaternion.slerp(player.targetQuaternion, interpolation);
+          const remoteBody = rigidBody.get(world, player.body.id);
+          if (!remoteBody) continue;
+          rigidBody.moveKinematic(
+            remoteBody,
+            player.mesh.position.toArray(),
+            player.mesh.quaternion.toArray(),
+            physicsStep
+          );
+        }
+
         updateWorld(world, {}, physicsStep);
         accumulator -= physicsStep;
       }
@@ -810,10 +935,17 @@ export default function Home() {
         ballMesh.position.fromArray(body.position);
         ballMesh.quaternion.fromArray(body.quaternion);
 
-        directionMarker.visible = markerVisible;
-        if (markerVisible) {
-          directionMarker.position.fromArray(body.position).addScaledVector(markerDirection, 0.72);
-          directionMarker.quaternion.setFromUnitVectors(markerForward, markerDirection);
+        for (const player of remotePlayers.values()) {
+          markerDirection.copy(player.mesh.position).sub(ballMesh.position);
+          const distance = markerDirection.length();
+          player.marker.visible = distance > 5;
+          if (distance > 0) {
+            markerDirection.multiplyScalar(1 / distance);
+            player.marker.position
+              .copy(ballMesh.position)
+              .addScaledVector(markerDirection, 0.75);
+            player.marker.quaternion.setFromUnitVectors(markerForward, markerDirection);
+          }
         }
 
         cameraTarget.fromArray(body.position);
@@ -830,6 +962,19 @@ export default function Home() {
           camera.position.z - 6
         );
         directionalLight.target.position.fromArray(body.position);
+
+        if (room?.state === 'open' && now - lastTransformSentAt >= 33) {
+          room.send(
+            JSON.stringify({
+              type: 'transform',
+              color: randomColor.getHex(),
+              position: [...body.position],
+              quaternion: [...body.quaternion],
+            }),
+            { reliable: false }
+          );
+          lastTransformSentAt = now;
+        }
       }
 
       if (Math.abs(targetZoom - camera.zoom) > 0.0001) {
@@ -840,6 +985,9 @@ export default function Home() {
     });
 
     return () => {
+      multiplayerCancelled = true;
+      room?.close();
+      for (const id of Array.from(remotePlayers.keys())) removeRemotePlayer(id);
       window.removeEventListener('resize', resize);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
@@ -858,8 +1006,8 @@ export default function Home() {
       snowTexture.dispose();
       ballMesh.geometry.dispose();
       ballMesh.material.dispose();
+      remoteGeometry.dispose();
       markerGeometry.dispose();
-      directionMarker.material.dispose();
       container.removeChild(renderer.domElement);
     };
   }, []);
