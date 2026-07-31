@@ -33,7 +33,11 @@ export default function Home() {
     scene.fog = new THREE.FogExp2(0xdbdbee, 0.05);
 
     const camera = new THREE.OrthographicCamera();
-    camera.position.set(0, 6, 5);
+    const baseCameraHeight = 6.5;
+    const baseCameraDistance = 5.5;
+    let viewW = 10;
+    const viewH = 10;
+    camera.position.set(0, baseCameraHeight, baseCameraDistance);
     camera.lookAt(0, 0, 0);
 
     const renderer = new THREE.WebGLRenderer({ antialias: false });
@@ -612,8 +616,11 @@ export default function Home() {
     const resize = () => {
       const { clientWidth, clientHeight } = container;
       const aspect = clientWidth / clientHeight;
-      camera.left = -aspect;
-      camera.right = aspect;
+      viewW = viewH * aspect;
+      camera.left = -viewW / 2;
+      camera.right = viewW / 2;
+      camera.top = viewH / 2;
+      camera.bottom = -viewH / 2;
       camera.near = -50;
       camera.far = 100;
       camera.updateProjectionMatrix();
@@ -629,8 +636,9 @@ export default function Home() {
     let pointerStrength = 0;
     let pointerJump = false;
     const pointerDirection = { right: 0, forward: 0 };
+    const pointerWorldDirection = { x: 0, z: 0 };
     const pointerStart = { x: 0, y: 0, time: 0, moved: false };
-    let targetZoom = 0.4;
+    let targetZoom = 1;
     camera.zoom = targetZoom;
     camera.updateProjectionMatrix();
 
@@ -661,16 +669,22 @@ export default function Home() {
       const distance = Math.hypot(dx, dy);
       const deadZone = 16;
       const maxDistance = Math.min(bounds.width, bounds.height) * 0.3;
-      const viewWidth = (camera.right - camera.left) / camera.zoom;
-      const viewHeight = (camera.top - camera.bottom) / camera.zoom;
 
       pointerStrength = THREE.MathUtils.clamp(
         (distance - deadZone) / (maxDistance - deadZone),
         0,
         1
       );
-      pointerDirection.right = (dx / bounds.width) * viewWidth;
-      pointerDirection.forward = (-dy / bounds.height) * viewHeight;
+      pointerDirection.right = (dx / bounds.width) * viewW;
+      pointerDirection.forward = (-dy / bounds.height) * viewH;
+
+      const worldX =
+        cameraRight.x * pointerDirection.right + cameraForward.x * pointerDirection.forward;
+      const worldZ =
+        cameraRight.z * pointerDirection.right + cameraForward.z * pointerDirection.forward;
+      const worldLength = Math.hypot(worldX, worldZ);
+      pointerWorldDirection.x = worldLength > 0 ? worldX / worldLength : 0;
+      pointerWorldDirection.z = worldLength > 0 ? worldZ / worldLength : 0;
     };
 
     const onPointerDown = (event: PointerEvent) => {
@@ -710,6 +724,8 @@ export default function Home() {
       pointerStrength = 0;
       pointerDirection.right = 0;
       pointerDirection.forward = 0;
+      pointerWorldDirection.x = 0;
+      pointerWorldDirection.z = 0;
       if (renderer.domElement.hasPointerCapture(activePointerId)) {
         renderer.domElement.releasePointerCapture(activePointerId);
       }
@@ -721,22 +737,14 @@ export default function Home() {
       pointerStrength = 0;
       pointerDirection.right = 0;
       pointerDirection.forward = 0;
+      pointerWorldDirection.x = 0;
+      pointerWorldDirection.z = 0;
     };
 
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
-      const delta =
-        event.deltaY *
-        (event.deltaMode === WheelEvent.DOM_DELTA_LINE
-          ? 16
-          : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
-            ? window.innerHeight
-            : 1);
-      targetZoom = THREE.MathUtils.clamp(
-        targetZoom * Math.exp(-delta * 0.001),
-        0.15,
-        2.5
-      );
+      const factor = event.deltaY > 0 ? 0.85 : 1.18;
+      targetZoom = Math.max(0.4, Math.min(2.5, targetZoom * factor));
     };
 
     window.addEventListener('keydown', onKeyDown);
@@ -859,13 +867,18 @@ export default function Home() {
     let accumulator = 0;
     const physicsStep = 1 / 120;
     const movement = new THREE.Vector3();
+    const lockedMovementDirection = new THREE.Vector3();
     const cameraForward = new THREE.Vector3(0, 0, -1);
     const cameraRight = new THREE.Vector3(1, 0, 0);
-    const cameraPosition = new THREE.Vector3();
-    const cameraTarget = new THREE.Vector3();
+    const cameraTarget = new THREE.Vector3(0, ballRadius, 0);
+    const desiredCameraPosition = new THREE.Vector3();
+    const desiredLookTarget = new THREE.Vector3();
     const markerDirection = new THREE.Vector3();
     const markerForward = new THREE.Vector3(0, 0, 1);
     let cameraYaw = 0;
+    let cameraYawTarget = 0;
+    let movementSignature = '';
+    const shortestAngle = (angle: number) => Math.atan2(Math.sin(angle), Math.cos(angle));
 
     renderer.setAnimationLoop(() => {
       const now = performance.now();
@@ -873,35 +886,44 @@ export default function Home() {
       accumulator += frameDelta;
       lastTime = now;
 
+      const moveRight = Number(keys.has('KeyD') || keys.has('ArrowRight')) -
+        Number(keys.has('KeyA') || keys.has('ArrowLeft'));
+      const moveForward = Number(keys.has('KeyW') || keys.has('ArrowUp')) -
+        Number(keys.has('KeyS') || keys.has('ArrowDown'));
+      const hasPointerMovement = pointerId !== null;
+      const strength = hasPointerMovement ? pointerStrength : 1;
+
+      if (!hasPointerMovement) {
+        const nextMovementSignature = `${moveRight}:${moveForward}`;
+        if (movementSignature !== nextMovementSignature) {
+          lockedMovementDirection.set(
+            cameraRight.x * moveRight + cameraForward.x * moveForward,
+            0,
+            cameraRight.z * moveRight + cameraForward.z * moveForward
+          );
+          if (lockedMovementDirection.lengthSq() > 0) {
+            lockedMovementDirection.normalize();
+          }
+          movementSignature = nextMovementSignature;
+        }
+        movement.copy(lockedMovementDirection);
+      } else {
+        movement.set(pointerWorldDirection.x, 0, pointerWorldDirection.z);
+      }
+
       while (accumulator >= physicsStep) {
         const rotation = Number(keys.has('KeyE')) - Number(keys.has('KeyQ'));
-        cameraYaw += rotation * 1.8 * physicsStep;
+        cameraYawTarget += rotation * 1.8 * physicsStep;
         cameraForward.set(Math.sin(cameraYaw), 0, -Math.cos(cameraYaw));
         cameraRight.set(Math.cos(cameraYaw), 0, Math.sin(cameraYaw));
 
         const body = rigidBody.get(world, ballBody.id);
         if (body) {
-          const hasPointerMovement = pointerId !== null;
-          const moveRight = hasPointerMovement
-            ? pointerDirection.right
-            : Number(keys.has('KeyD') || keys.has('ArrowRight')) -
-              Number(keys.has('KeyA') || keys.has('ArrowLeft'));
-          const moveForward = hasPointerMovement
-            ? pointerDirection.forward
-            : Number(keys.has('KeyW') || keys.has('ArrowUp')) -
-              Number(keys.has('KeyS') || keys.has('ArrowDown'));
-          const strength = hasPointerMovement ? pointerStrength : 1;
           const sprint =
             !hasPointerMovement && (keys.has('ShiftLeft') || keys.has('ShiftRight'));
           const sprinting = hasPointerMovement || sprint;
           const movementPower = sprinting ? 1500 : 500;
           const rollPower = sprinting ? 150 : 50;
-
-          movement.set(
-            cameraRight.x * moveRight + cameraForward.x * moveForward,
-            0,
-            cameraRight.z * moveRight + cameraForward.z * moveForward
-          );
 
           if (movement.lengthSq() > 0 && strength > 0) {
             movement.normalize();
@@ -973,13 +995,39 @@ export default function Home() {
           }
         }
 
-        cameraTarget.fromArray(body.position);
-        cameraPosition.set(
-          body.position[0] - cameraForward.x * 5,
-          body.position[1] + 6,
-          body.position[2] - cameraForward.z * 5
+        const velocity = body.motionProperties.linearVelocity;
+        const horizontalSpeed = Math.hypot(velocity[0], velocity[2]);
+        const shouldFollowInput =
+          movement.lengthSq() > 1e-4 && strength > 0 &&
+          (hasPointerMovement || moveForward > 0);
+        if (shouldFollowInput) {
+          cameraYawTarget = Math.atan2(movement.x, -movement.z);
+        } else if (horizontalSpeed > 0.8) {
+          const forwardVelocity = velocity[0] * cameraForward.x + velocity[2] * cameraForward.z;
+          if (forwardVelocity > 0.1) {
+            cameraYawTarget = Math.atan2(velocity[0], -velocity[2]);
+          }
+        }
+        cameraYaw += shortestAngle(cameraYawTarget - cameraYaw) * 0.01;
+        cameraForward.set(Math.sin(cameraYaw), 0, -Math.cos(cameraYaw));
+        cameraRight.set(Math.cos(cameraYaw), 0, Math.sin(cameraYaw));
+
+        desiredCameraPosition.set(
+          body.position[0] - cameraForward.x * baseCameraDistance,
+          baseCameraHeight + body.position[1] * 0.3,
+          body.position[2] - cameraForward.z * baseCameraDistance
         );
-        camera.position.copy(cameraPosition);
+        if (horizontalSpeed > 0.1) {
+          desiredLookTarget.set(
+            body.position[0] + (velocity[0] / horizontalSpeed) * 1.25,
+            body.position[1] + 0.15,
+            body.position[2] + (velocity[2] / horizontalSpeed) * 1.25
+          );
+        } else {
+          desiredLookTarget.set(body.position[0], body.position[1] + 0.15, body.position[2]);
+        }
+        camera.position.lerp(desiredCameraPosition, 0.1);
+        cameraTarget.lerp(desiredLookTarget, 0.14);
         camera.lookAt(cameraTarget);
         directionalLight.position.set(
           camera.position.x + 8,
@@ -1002,10 +1050,8 @@ export default function Home() {
         }
       }
 
-      if (Math.abs(targetZoom - camera.zoom) > 0.0001) {
-        camera.zoom += (targetZoom - camera.zoom) * (1 - Math.exp(-10 * frameDelta));
-        camera.updateProjectionMatrix();
-      }
+      camera.zoom += (targetZoom - camera.zoom) * 0.15;
+      camera.updateProjectionMatrix();
       renderer.render(scene, camera);
     });
 
