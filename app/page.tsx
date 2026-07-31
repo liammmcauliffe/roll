@@ -258,6 +258,7 @@ export default function Home() {
     const treePools: number[] = [];
     const rockPools: number[] = [];
     const instance = new THREE.Object3D();
+    const leanAxis = new THREE.Vector3();
     const hiddenMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
     let assetsReady = false;
     let disposed = false;
@@ -317,7 +318,9 @@ export default function Home() {
       worldZ: number,
       targetSize: number,
       yaw: number,
-      instances: { poolIndex: number; slot: number; body: Body }[]
+      instances: { poolIndex: number; slot: number; body: Body }[],
+      leanDirection = 0,
+      leanAngle = 0
     ) => {
       const pool = pools[poolIndex];
       const slot = leaseSlot(pool);
@@ -327,6 +330,8 @@ export default function Home() {
       const worldY = terrainHeight(worldX, worldZ);
       instance.position.set(worldX, worldY, worldZ);
       instance.rotation.set(0, yaw, 0);
+      leanAxis.set(Math.cos(leanDirection), 0, Math.sin(leanDirection));
+      instance.rotateOnWorldAxis(leanAxis, leanAngle);
       instance.scale.setScalar(scale);
       instance.updateMatrix();
       pool.mesh.setMatrixAt(slot, instance.matrix);
@@ -393,7 +398,7 @@ export default function Home() {
 
       const instances: { poolIndex: number; slot: number; body: Body }[] = [];
       if (assetsReady) {
-        const treeCount = 20 + Math.floor(hash2D(chunkX, chunkZ, 100) * 10);
+        const treeCount = 22 + Math.floor(hash2D(chunkX, chunkZ, 100) * 10);
         for (let index = 0; index < treeCount; index++) {
           const worldX =
             chunkX * chunkSize +
@@ -403,7 +408,7 @@ export default function Home() {
             (hash2D(chunkX, chunkZ, index * 10 + 2) - 0.5) * chunkSize;
           if (
             Math.hypot(worldX, worldZ) < 5 ||
-            hash2D(chunkX, chunkZ, index * 10 + 3) > forestDensity(worldX, worldZ)
+            hash2D(chunkX, chunkZ, index * 10 + 3) > forestDensity(worldX, worldZ) * 1.3
           ) {
             continue;
           }
@@ -414,7 +419,9 @@ export default function Home() {
             ];
           const height = 3 + hash2D(chunkX, chunkZ, index * 10 + 5) * 8;
           const yaw = hash2D(chunkX, chunkZ, index * 10 + 6) * Math.PI * 2;
-          placeAsset(poolIndex, worldX, worldZ, height, yaw, instances);
+          const leanDirection = hash2D(chunkX, chunkZ, index * 10 + 7) * Math.PI * 2;
+          const leanAngle = hash2D(chunkX, chunkZ, index * 10 + 8) * 0.05;
+          placeAsset(poolIndex, worldX, worldZ, height, yaw, instances, leanDirection, leanAngle);
         }
 
         const rockCount = 2 + Math.floor(hash2D(chunkX, chunkZ, 200) * 4);
