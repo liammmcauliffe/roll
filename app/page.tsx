@@ -432,7 +432,9 @@ export default function Home() {
           const worldZ =
             chunkZ * chunkSize +
             (hash2D(chunkX, chunkZ, index * 10 + 8) - 0.5) * chunkSize;
-          if (Math.hypot(worldX, worldZ) < 4) continue;
+          if (Math.hypot(worldX, worldZ) < 4 || forestDensity(worldX, worldZ) > 0.55) {
+            continue;
+          }
 
           const poolIndex =
             rockPools[
