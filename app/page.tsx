@@ -871,6 +871,11 @@ export default function Home() {
             : Number(keys.has('KeyW') || keys.has('ArrowUp')) -
               Number(keys.has('KeyS') || keys.has('ArrowDown'));
           const strength = hasPointerMovement ? pointerStrength : 1;
+          const sprint =
+            !hasPointerMovement && (keys.has('ShiftLeft') || keys.has('ShiftRight'));
+          const sprinting = hasPointerMovement || sprint;
+          const movementPower = sprinting ? 1500 : 500;
+          const rollPower = sprinting ? 150 : 50;
 
           movement.set(
             cameraRight.x * moveRight + cameraForward.x * moveForward,
@@ -883,13 +888,13 @@ export default function Home() {
             rigidBody.addForce(
               world,
               body,
-              [movement.x * 500 * strength, 0, movement.z * 500 * strength],
+              [movement.x * movementPower * strength, 0, movement.z * movementPower * strength],
               true
             );
             rigidBody.addTorque(
               world,
               body,
-              [movement.z * 50 * strength, 0, -movement.x * 50 * strength],
+              [movement.z * rollPower * strength, 0, -movement.x * rollPower * strength],
               true
             );
           }
