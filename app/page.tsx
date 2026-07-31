@@ -547,7 +547,27 @@ export default function Home() {
       return [halfX, halfZ] as const;
     };
 
-    const fbxLoader = new FBXLoader();
+    const fbxManager = new THREE.LoadingManager();
+    fbxManager.setURLModifier((url) =>
+      /\.(?:bmp|jpe?g|png|tga|tiff?|webp)$/i.test(url)
+        ? 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs='
+        : url
+    );
+    const originalWarn = globalThis.console.warn;
+    const filteredWarn = (...args: unknown[]) => {
+      if (!String(args[0]).startsWith('THREE.FBXLoader: %s map is not supported')) {
+        originalWarn(...args);
+      }
+    };
+    const restoreFbxWarnings = () => {
+      if (globalThis.console.warn === filteredWarn) {
+        globalThis.console.warn = originalWarn;
+      }
+    };
+    globalThis.console.warn = filteredWarn;
+    fbxManager.onLoad = restoreFbxWarnings;
+    fbxManager.onError = restoreFbxWarnings;
+    const fbxLoader = new FBXLoader(fbxManager);
     fbxLoader.load('/models/trees-pine.fbx', (model) => {
       if (disposed) return;
       model.updateMatrixWorld(true);
@@ -990,6 +1010,8 @@ export default function Home() {
     });
 
     return () => {
+      disposed = true;
+      restoreFbxWarnings();
       multiplayerCancelled = true;
       room?.close();
       for (const id of Array.from(remotePlayers.keys())) removeRemotePlayer(id);
