@@ -4,15 +4,18 @@ import { useEffect, useRef } from 'react';
 import {
   addBroadphaseLayer,
   addObjectLayer,
-  box,
+  convexHull,
   createWorld,
   createWorldSettings,
+  cylinder,
   enableCollision,
   MotionType,
   registerAll,
   rigidBody,
+  scaled,
   sphere,
   triangleMesh,
+  type Shape,
   updateWorld,
 } from 'crashcat';
 import { connect, type RoomConnection } from 'gatho/client';
@@ -250,7 +253,11 @@ export default function Home() {
     type Pool = {
       mesh: THREE.InstancedMesh;
       size: number;
-      collider: [number, number, number];
+      collider: {
+        shape: Shape;
+        centerY: number;
+        rotate: boolean;
+      };
       nextSlot: number;
       freeSlots: number[];
     };
@@ -337,15 +344,14 @@ export default function Home() {
       pool.mesh.setMatrixAt(slot, instance.matrix);
       pool.mesh.instanceMatrix.needsUpdate = true;
 
-      const [halfX, halfHeight, halfZ] = pool.collider.map(
-        (extent) => extent * scale
-      ) as [number, number, number];
       const body = rigidBody.create(world, {
         motionType: MotionType.STATIC,
         objectLayer: staticLayer,
-        shape: box.create({ halfExtents: [halfX, halfHeight, halfZ] }),
-        position: [worldX, worldY + halfHeight, worldZ],
-        quaternion: [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)],
+        shape: scaled.create({ shape: pool.collider.shape, scale: [scale, scale, scale] }),
+        position: [worldX, worldY + pool.collider.centerY * scale, worldZ],
+        quaternion: pool.collider.rotate
+          ? [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)]
+          : [0, 0, 0, 1],
         friction: 1.8,
       });
       instances.push({ poolIndex, slot, body });
@@ -527,37 +533,29 @@ export default function Home() {
       return geometry;
     };
 
-    const treeHalfWidth = (geometry: THREE.BufferGeometry) => {
+    const treeRadius = (geometry: THREE.BufferGeometry) => {
       const positions = geometry.attributes.position;
       const bounds = geometry.boundingBox!;
-      const widths: number[] = [];
+      const centerX = (bounds.min.x + bounds.max.x) / 2;
+      const centerZ = (bounds.min.z + bounds.max.z) / 2;
+      const radii: number[] = [];
 
       for (let index = 0; index < positions.count; index++) {
-        if (positions.getY(index) < bounds.max.y * 0.5) {
-          widths.push(
-            Math.max(Math.abs(positions.getX(index)), Math.abs(positions.getZ(index)))
+        if (
+          positions.getY(index) - bounds.min.y <
+          (bounds.max.y - bounds.min.y) * 0.5
+        ) {
+          radii.push(
+            Math.hypot(
+              positions.getX(index) - centerX,
+              positions.getZ(index) - centerZ
+            )
           );
         }
       }
 
-      widths.sort((a, b) => a - b);
-      return widths[Math.floor(widths.length * 0.3)] ?? 0.2;
-    };
-
-    const rockHalfExtents = (geometry: THREE.BufferGeometry) => {
-      const positions = geometry.attributes.position;
-      const bounds = geometry.boundingBox!;
-      let halfX = 0;
-      let halfZ = 0;
-
-      for (let index = 0; index < positions.count; index++) {
-        if (positions.getY(index) < bounds.max.y * 0.5) {
-          halfX = Math.max(halfX, Math.abs(positions.getX(index)));
-          halfZ = Math.max(halfZ, Math.abs(positions.getZ(index)));
-        }
-      }
-
-      return [halfX, halfZ] as const;
+      radii.sort((a, b) => a - b);
+      return radii[Math.floor(radii.length * 0.3)] ?? 0.2;
     };
 
     const fbxManager = new THREE.LoadingManager();
@@ -593,9 +591,13 @@ export default function Home() {
         const geometry = prepareGeometry(mesh);
         const bounds = geometry.boundingBox!;
         const height = bounds.max.y - bounds.min.y;
-        const trunk = treeHalfWidth(geometry);
+        const trunk = treeRadius(geometry);
         treePools.push(
-          addPool(geometry, treeMaterial, 4096, [trunk, height / 2, trunk])
+          addPool(geometry, treeMaterial, 4096, {
+            shape: cylinder.create({ radius: trunk, halfHeight: height / 2, convexRadius: 0 }),
+            centerY: height / 2,
+            rotate: false,
+          })
         );
       });
       finishAssetPack();
@@ -609,14 +611,15 @@ export default function Home() {
         if (!mesh.isMesh || !mesh.name.startsWith('Rock_')) return;
 
         const geometry = prepareGeometry(mesh);
-        const bounds = geometry.boundingBox!;
-        const [halfX, halfZ] = rockHalfExtents(geometry);
         rockPools.push(
-          addPool(geometry, rockMaterial, 512, [
-            halfX,
-            (bounds.max.y - bounds.min.y) / 2,
-            halfZ,
-          ])
+          addPool(geometry, rockMaterial, 512, {
+            shape: convexHull.create({
+              positions: Array.from(geometry.attributes.position.array),
+              convexRadius: 0,
+            }),
+            centerY: 0,
+            rotate: true,
+          })
         );
       });
       finishAssetPack();
