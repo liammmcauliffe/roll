@@ -133,6 +133,27 @@ export default function Home() {
 
     const floorMaterial = new THREE.MeshLambertMaterial({ map: snowTexture, color: 0xffffff });
 
+    const snowfallPositions = new Float32Array(100 * 3);
+    for (let index = 0; index < 100; index++) {
+      snowfallPositions[index * 3] = (hash(index, 10) - 0.5) * 20;
+      snowfallPositions[index * 3 + 1] = hash(index, 20) * 10 - 2;
+      snowfallPositions[index * 3 + 2] = (hash(index, 30) - 0.5) * 20;
+    }
+    const snowfallGeometry = new THREE.BufferGeometry();
+    snowfallGeometry.setAttribute(
+      'position',
+      new THREE.BufferAttribute(snowfallPositions, 3)
+    );
+    const snowfallMaterial = new THREE.PointsMaterial({
+      color: 0xffffff,
+      size: 0.05,
+      transparent: true,
+      opacity: 0.5,
+      depthWrite: false,
+    });
+    const snowfall = new THREE.Points(snowfallGeometry, snowfallMaterial);
+    scene.add(snowfall);
+
     const ballRadius = 0.33;
     const randomColor = new THREE.Color().setHSL(Math.random(), 0.7, 0.55);
     const ballMesh = new THREE.Mesh(
@@ -898,6 +919,15 @@ export default function Home() {
       accumulator += frameDelta;
       lastTime = now;
 
+      for (let index = 0; index < 100; index++) {
+        const offset = index * 3;
+        snowfallPositions[offset + 1] -= 1/2 * frameDelta;
+        if (snowfallPositions[offset + 1] < -2) {
+          snowfallPositions[offset + 1] = 10 - 2;
+        }
+      }
+      snowfallGeometry.attributes.position.needsUpdate = true;
+
       const moveRight = Number(keys.has('KeyD') || keys.has('ArrowRight')) -
         Number(keys.has('KeyA') || keys.has('ArrowLeft'));
       const moveForward = Number(keys.has('KeyW') || keys.has('ArrowUp')) -
@@ -990,6 +1020,11 @@ export default function Home() {
 
       const body = rigidBody.get(world, ballBody.id);
       if (body) {
+        snowfall.position.set(
+          body.position[0],
+          terrainHeight(body.position[0], body.position[2]) + 2,
+          body.position[2]
+        );
         updateChunks(body.position[0], body.position[2]);
         ballMesh.position.fromArray(body.position);
         ballMesh.quaternion.fromArray(body.quaternion);
@@ -1089,6 +1124,8 @@ export default function Home() {
       renderer.dispose();
       floorMaterial.dispose();
       snowTexture.dispose();
+      snowfallGeometry.dispose();
+      snowfallMaterial.dispose();
       ballMesh.geometry.dispose();
       ballMesh.material.dispose();
       remoteGeometry.dispose();
