@@ -50,6 +50,8 @@ export default function Home() {
     renderer.domElement.style.height = '100%';
     renderer.domElement.style.display = 'block';
     renderer.domElement.style.imageRendering = 'pixelated';
+    renderer.domElement.style.touchAction = 'none';
+    renderer.domElement.style.userSelect = 'none';
     container.appendChild(renderer.domElement);
 
     scene.add(new THREE.HemisphereLight(0xffffff, 0x666666, 1.2));
@@ -671,9 +673,29 @@ export default function Home() {
     const pointerDirection = { right: 0, forward: 0 };
     const pointerWorldDirection = { x: 0, z: 0 };
     const pointerStart = { x: 0, y: 0, time: 0, moved: false };
+    const activePointers = new Map<number, { x: number; y: number }>();
+    let pinchStartDistance = 0;
+    let pinchStartZoom = 1;
     let targetZoom = 1;
     camera.zoom = targetZoom;
     camera.updateProjectionMatrix();
+
+    const clampZoom = (zoom: number) => Math.max(0.4, Math.min(2.5, zoom));
+
+    const pointerDistance = () => {
+      const points = Array.from(activePointers.values());
+      if (points.length < 2) return 0;
+      return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+    };
+
+    const clearMovementPointer = () => {
+      pointerId = null;
+      pointerStrength = 0;
+      pointerDirection.right = 0;
+      pointerDirection.forward = 0;
+      pointerWorldDirection.x = 0;
+      pointerWorldDirection.z = 0;
+    };
 
     const onKeyDown = (event: KeyboardEvent) => {
       keys.add(event.code);
@@ -721,19 +743,39 @@ export default function Home() {
     };
 
     const onPointerDown = (event: PointerEvent) => {
-      if (event.button !== 0) return;
+      if (event.button !== 0 && event.pointerType === 'mouse') return;
+
+      activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      renderer.domElement.setPointerCapture(event.pointerId);
+      event.preventDefault();
+
+      if (activePointers.size >= 2) {
+        clearMovementPointer();
+        pinchStartDistance = pointerDistance();
+        pinchStartZoom = targetZoom;
+        return;
+      }
 
       pointerId = event.pointerId;
       pointerStart.x = event.clientX;
       pointerStart.y = event.clientY;
       pointerStart.time = performance.now();
       pointerStart.moved = false;
-      renderer.domElement.setPointerCapture(event.pointerId);
       updatePointerDirection(event);
-      event.preventDefault();
     };
 
     const onPointerMove = (event: PointerEvent) => {
+      if (!activePointers.has(event.pointerId)) return;
+      activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+      if (activePointers.size >= 2 && pinchStartDistance > 0) {
+        const distance = pointerDistance();
+        if (distance > 0) {
+          targetZoom = clampZoom(pinchStartZoom * (distance / pinchStartDistance));
+        }
+        return;
+      }
+
       if (event.pointerId !== pointerId) return;
 
       if (
@@ -745,6 +787,15 @@ export default function Home() {
     };
 
     const onPointerUp = (event: PointerEvent) => {
+      activePointers.delete(event.pointerId);
+      if (renderer.domElement.hasPointerCapture(event.pointerId)) {
+        renderer.domElement.releasePointerCapture(event.pointerId);
+      }
+
+      if (activePointers.size < 2) {
+        pinchStartDistance = 0;
+      }
+
       if (event.pointerId !== pointerId) return;
 
       const duration = performance.now() - pointerStart.time;
@@ -752,32 +803,24 @@ export default function Home() {
         pointerJump = true;
       }
 
-      const activePointerId = pointerId;
-      pointerId = null;
-      pointerStrength = 0;
-      pointerDirection.right = 0;
-      pointerDirection.forward = 0;
-      pointerWorldDirection.x = 0;
-      pointerWorldDirection.z = 0;
-      if (renderer.domElement.hasPointerCapture(activePointerId)) {
-        renderer.domElement.releasePointerCapture(activePointerId);
-      }
+      clearMovementPointer();
     };
 
     const onLostPointerCapture = (event: PointerEvent) => {
+      activePointers.delete(event.pointerId);
+      if (activePointers.size < 2) pinchStartDistance = 0;
       if (event.pointerId !== pointerId) return;
-      pointerId = null;
-      pointerStrength = 0;
-      pointerDirection.right = 0;
-      pointerDirection.forward = 0;
-      pointerWorldDirection.x = 0;
-      pointerWorldDirection.z = 0;
+      clearMovementPointer();
     };
 
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
       const factor = event.deltaY > 0 ? 0.85 : 1.18;
-      targetZoom = Math.max(0.4, Math.min(2.5, targetZoom * factor));
+      targetZoom = clampZoom(targetZoom * factor);
+    };
+
+    const onContextMenu = (event: Event) => {
+      event.preventDefault();
     };
 
     window.addEventListener('keydown', onKeyDown);
@@ -789,7 +832,7 @@ export default function Home() {
     renderer.domElement.addEventListener('pointerup', onPointerUp);
     renderer.domElement.addEventListener('pointercancel', onPointerUp);
     renderer.domElement.addEventListener('lostpointercapture', onLostPointerCapture);
-    renderer.domElement.style.touchAction = 'none';
+    renderer.domElement.addEventListener('contextmenu', onContextMenu);
 
     let room: RoomConnection | null = null;
     let multiplayerCancelled = false;
@@ -1118,6 +1161,7 @@ export default function Home() {
       renderer.domElement.removeEventListener('pointerup', onPointerUp);
       renderer.domElement.removeEventListener('pointercancel', onPointerUp);
       renderer.domElement.removeEventListener('lostpointercapture', onLostPointerCapture);
+      renderer.domElement.removeEventListener('contextmenu', onContextMenu);
       renderer.setAnimationLoop(null);
       rigidBody.remove(world, ballBody);
       for (const key of activeChunks.keys()) unloadChunk(key);
@@ -1134,5 +1178,5 @@ export default function Home() {
     };
   }, []);
 
-  return <div ref={containerRef} style={{ position: 'fixed', inset: 0 }} />;
+  return <div ref={containerRef} style={{ position: 'fixed', inset: 0, touchAction: 'none' }} />;
 }
